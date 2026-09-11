@@ -9,13 +9,16 @@ smoke test, so it must be caught by an explicit, release-blocking gate. This is 
 
 WHY THREE LAYERS — "applied" means three different things, and each fails independently:
 
-  Layer 1  APPLIED TO SOURCE   Every patch in `patches/series` reverse-applies cleanly to the
-                               build tree that produced the binary (`patch --dry-run -R`). If a
-                               patch's exact hunks are present, it reverses; if not, it is
-                               missing or was mangled. Zero-maintenance: the patch files are the
-                               spec, so a newly added patch is covered automatically. Catches a
-                               silently-rejected/dropped patch at build time, and a stale
-                               committed `patches/` that no longer reproduces the built tree.
+  Layer 1  APPLIED TO SOURCE   The whole series reverse-applies cleanly, as a stack in REVERSE
+                               order, to a throwaway hardlink copy of the build tree. A later
+                               patch routinely edits a file an earlier one created (002 creates
+                               persona_profile.cc, 170 later extends it), so an *independent*
+                               per-patch reverse dry-run is a false positive — only peeling the
+                               stack in reverse series order restores the pristine state each
+                               earlier patch expects. Catches a silently-rejected/dropped patch
+                               at build time, and a stale committed `patches/` that no longer
+                               reproduces the built tree. Zero-maintenance: the patch files are
+                               the spec, so a newly added patch is covered automatically.
   Layer 2  COMPILED INTO BINARY Each patch's required marker string(s) are present in the shipped
                                chrome / chrome.dll. Catches "source is right but the binary is
                                stale" — an incremental build that didn't recompile the touched
@@ -151,40 +154,69 @@ def _patch_bin() -> str:
 
 
 def layer1_source(tree: Path, target: str, series: list[str]) -> list[str]:
-    """Reverse-apply dry-run of every series patch against the build tree. A patch that was
-    correctly applied reverses cleanly (returncode 0); one that is missing or mangled fails."""
+    """Validate the build tree by reverse-applying the WHOLE series as a stack, in REVERSE
+    order, onto a throwaway hardlink copy of the tree.
+
+    Why reverse order (not independent per-patch dry-runs): the series is a *stack* — a later
+    patch frequently modifies a file an earlier patch created (e.g. 002 creates
+    persona_profile.cc, 170 later edits it). An independent `patch -R --dry-run` of 002 against
+    the FINAL tree then fails, because 170's additions are still present: the file is no longer
+    in the exact state 002 left it. That is a false positive — 002 IS correctly applied.
+    Reversing the stack in reverse series order (210, 200, ... 000) validates the tree the same
+    way it was built: each reverse step removes one patch's contribution, exposing the pristine
+    state the NEXT-earlier patch expects. If every step reverses cleanly, the tree was produced
+    by applying the series in order and no patch is missing or mangled.
+
+    The reverse runs on a same-filesystem hardlink copy (cp -al: instant, only the files patch
+    actually rewrites are duplicated), so the real build tree is never mutated — a later
+    `ninja` still works. A patch that fails to reverse is reported as the culprit."""
     if not tree.is_dir():
         die(f"--tree {tree} is not a directory")
     patch = _patch_bin()
-    fails: list[str] = []
-    checked = skipped = 0
-    for p in series:
-        if target == "linux" and p in WINDOWS_ONLY:
-            skipped += 1
-            continue
-        checked += 1
-        proc = subprocess.run(
-            [patch, "-p1", "-R", "--dry-run", "-f", "-i", str(PATCHES_DIR / p), "-d", str(tree)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if proc.returncode != 0:
-            reason = "missing or mangled in the tree"
-            out = proc.stdout or ""
-            if "can't find file" in out or "No file to patch" in out:
-                reason = "target file(s) absent"
-            elif "Unreversed patch detected" in out:
-                reason = "hunks do not match (tree diverged from the committed patch)"
-            elif "FAILED" in out:
-                bad = [ln for ln in out.splitlines() if "FAILED" in ln]
-                reason = "hunk mismatch: " + "; ".join(bad[:3])
-            fails.append(f"[source] {p} does NOT reverse-apply cleanly -> {reason}")
-    if not fails:
-        note(f"Layer 1 OK: all {checked} patches reverse-apply cleanly to {tree} "
-             f"(target={target}, {skipped} windows-only skipped)")
-    return fails
+
+    effective = [p for p in series if not (target == "linux" and p in WINDOWS_ONLY)]
+    skipped = len(series) - len(effective)
+    if not effective:
+        note(f"Layer 1 OK: nothing to check for target={target}")
+        return []
+
+    # Hardlink working copy on the same filesystem as the tree (cp -al needs it).
+    workdir = tree.parent / f".verify-TMP-{os.getpid()}"
+    if not workdir.exists():
+        os.makedirs(workdir)
+    try:
+        subprocess.run(["cp", "-al", str(tree) + "/.", str(workdir)],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        fails: list[str] = []
+        checked = 0
+        # reverse stack: peel the LAST applied patch off first
+        for p in reversed(effective):
+            checked += 1
+            proc = subprocess.run(
+                [patch, "-p1", "-R", "-f", "-i", str(PATCHES_DIR / p), "-d", str(workdir)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            if proc.returncode != 0:
+                reason = "missing or mangled in the tree"
+                out = proc.stdout or ""
+                if "can't find file" in out or "No file to patch" in out:
+                    reason = "target file(s) absent"
+                elif "Unreversed patch detected" in out:
+                    reason = "hunks do not match (tree diverged from the committed patch)"
+                elif "FAILED" in out:
+                    bad = [ln for ln in out.splitlines() if "FAILED" in ln]
+                    reason = "hunk mismatch: " + "; ".join(bad[:3])
+                fails.append(f"[source] {p} does NOT reverse-apply cleanly -> {reason}")
+        if not fails:
+            note(f"Layer 1 OK: full series reverses cleanly (reverse order) from {tree} "
+                 f"(target={target}, {checked} patches peeled, {skipped} windows-only skipped)")
+        return fails
+    finally:
+        import shutil
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- Layer 2

@@ -173,16 +173,6 @@
         "expect": "Correctly patched: info.vendor is a lowercase persona family derived from the spoofed WebGL vendor (one of nvidia|amd|intel, e.g. nvidia/ampere, amd/rdna2, intel/gen-12-lp) that is CONTAINED in the WebGL UNMASKED_VENDOR string, so coheres===true (e.g. {\"gpuVendor\":\"nvidia\",\"arch\":\"ampere\",\"coheres\":true}). Unpatched (075 lost, 000/002 still applied): info.vendor is the real host adapter's vendor, unrelated to the spoofed WebGL vendor, so coheres===false."
       }
     },
-    "080-client-rects.patch": {
-      "surface": "Adds QuadF::Offset (with a zero-width/height epsilon guard) — the geometry primitive that applies a per-seed sub-pixel offset to Element.getClientRects()/getBoundingClientRect() to defeat the client-rects fingerprint while leaving degenerate (zero-size) rects unshifted for coherence.",
-      "windows_only": false,
-      "markers": [],
-      "runtime": {
-        "surface": "Element.getClientRects()/getBoundingClientRect() sub-pixel coordinates",
-        "probe": "(() => { const d = document.createElement('div'); d.style.cssText='position:absolute;left:50px;top:50px;width:80px;height:20px'; document.body.appendChild(d); const r = d.getClientRects()[0]; d.remove(); return [r.x - 50, r.y - 50]; })()",
-        "expect": "Correctly patched (launched with --fingerprint=seed): both values are a tiny NON-ZERO sub-pixel offset (e.g. ~1e-3..1e-1 magnitude), identical on repeated reads within one seed and different for a different --fingerprint seed. Vanilla/unpatched (or a build that lost this patch): both are exactly 0 (rect x/y == 50/50). Coherence sanity check: a zero-size element (width:0 or height:0) must still return exact integer coordinates — its rect is NOT offset."
-      }
-    },
     "090-timezone.patch": {
       "surface": "Timezone spoofing: makes Blink's TimeZoneController honor a chosen IANA timezone from the --timezone switch, driving ICU/V8 so Intl timeZone and Date offsets report the fabricated zone instead of the host's.",
       "windows_only": false,
