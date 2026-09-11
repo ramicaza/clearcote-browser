@@ -36,8 +36,8 @@ if [ "$TARGET" = "windows" ]; then
   INNER="chrome.exe"
 else
   # --- Linux: deterministic tar.xz of the deployed-file set (from chrome/installer/linux) ---
-  ASSET="clearcote-$V-linux-x64.tar.xz"
-  STAGE="$DIST/stage-linux-x64"; rm -rf "$STAGE"; mkdir -p "$STAGE/locales" "$STAGE/lib"
+  ASSET="clearcote-$V-linux-${ARCH:-x64}.tar.xz"
+  STAGE="$DIST/stage-linux-${ARCH:-x64}"; rm -rf "$STAGE"; mkdir -p "$STAGE/locales" "$STAGE/lib"
   copy_in() { [ -e "$OUT/$1" ] && { mkdir -p "$STAGE/$(dirname "$1")"; cp -a "$OUT/$1" "$STAGE/$1"; } || \
               { [ "${2:-}" = req ] && { echo "FATAL: missing $1"; exit 1; } || echo "  (skip: $1)"; }; }
   for f in chrome chrome_crashpad_handler icudtl.dat resources.pak; do copy_in "$f" req; done
