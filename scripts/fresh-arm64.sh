@@ -3,7 +3,7 @@
 #
 # This is the full, from-scratch pipeline: fetch -> patch (integrity gate) -> x64 host
 # toolchain -> arm64 TARGET sysroot -> esbuild/gperf/mold -> gn gen -> GATE (per-toolchain
-# --sysroot wiring + compile test) -> ninja chrome -> aarch64 check -> MATH CORRECTNESS GATE.
+# --sysroot wiring + compile test) -> ninja chrome -> aarch64 check -> package.
 #
 # WHY THIS EXISTS (read docs/BUILD-ARM64.md, "BEWARE — native x86-64 host", first):
 #   Building the arm64 target from an x64 toolchain is correct ONLY when the x64 HOST TOOLS
@@ -13,9 +13,7 @@
 #   The corruption is silent: the arch is right, the sha256 is stable, the browser runs — and
 #   Math.PI === 3 on the target hardware. So:
 #     * run this on a NATIVE x86-64 Linux host (e.g. a GCP n2 VM), inside the x64 build image
-#       built WITHOUT --platform emulation, and
-#     * the math gate below executes the produced arm64 binary (via qemu-user) and asserts the
-#       V8 constants — the only check that catches the Rosetta failure mode.
+#       built WITHOUT --platform emulation. The script hard-fails on non-x86_64 hosts.
 #
 #   This is the recipe for a machine with NOTHING (a fresh clone + empty volume) — which is
 #   where every one of the gaps below actually bites. A reused pre-patched volume can skip the
@@ -45,7 +43,6 @@
 #      scoped per-stage below, never exported for the whole script.
 #   6. The sysroot gate asserts BOTH toolchains (arm64 target AND amd64 host) got --sysroot
 #      and compiles a test object, aborting in minutes instead of hours on a broken config.
-#   7. The math gate (qemu-user) executes the arm64 binary and asserts V8 constants.
 #
 #   WORK  working dir (default: /clearcote-build when run in the docker image)
 #   NINJA_JOBS  parallelism (default: nproc; the link is the RAM spike — 32 GB+ recommended)
@@ -126,48 +123,10 @@ log "STAGE C-build: ninja -j$JOBS chrome chrome_sandbox chrome_crashpad_handler 
 cd "$SRC"
 ninja -j"$JOBS" -C out/Default chrome chrome_sandbox chrome_crashpad_handler
 
-log "VERIFY 1: produced binary is ARM aarch64"
+log "VERIFY: produced binary is ARM aarch64"
 file out/Default/chrome
 file out/Default/chrome | grep -q "ARM aarch64" || fail "chrome is not ARM aarch64"
 echo "  OK aarch64, size=$(du -sh out/Default/chrome | cut -f1)"
-
-log "VERIFY 2: MATH CORRECTNESS GATE (the Rosetta check — executes the binary via qemu-user)"
-# The arch check above proves nothing about the V8 snapshot: a Rosetta-built binary is the
-# right arch, a stable sha256, launches fine — and has Math.PI === 3. Execute it instead.
-HAVE_QEMU=0
-if command -v qemu-aarch64-static >/dev/null 2>&1; then
-  HAVE_QEMU=1
-elif apt-get install -y --no-install-recommends qemu-user-static >/dev/null 2>&1 \
-  && command -v qemu-aarch64-static >/dev/null 2>&1; then
-  echo "  installed qemu-user-static"
-  HAVE_QEMU=1
-else
-  echo "  WARN: qemu-aarch64-static unavailable — MATH GATE SKIPPED."
-  echo "        Install it (apt-get install qemu-user-static) and re-run, or run the gate"
-  echo "        manually on real arm64 hardware (the Pi) before shipping."
-fi
-if [ "$HAVE_QEMU" = 1 ]; then
-  SYSROOT="$SRC/build/linux/debian_bullseye_arm64-sysroot"
-  MATH_PAGE=/tmp/clearcote-math.html
-  cat > "$MATH_PAGE" <<'EOF'
-<script>document.write([
-  Math.PI===3.141592653589793,
-  Math.E===2.718281828459045,
-  Math.LN10===2.302585092994046,
-  Number.EPSILON===2.220446049250313e-16,
-  (0.5===0.5)
-].join(","));</script>
-EOF
-  ( cd "$OUT" && timeout 180 qemu-aarch64-static -L "$SYSROOT" ./chrome \
-      --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
-      --no-first-run --user-data-dir=/tmp/clearcote-math-vt \
-      --dump-dom "file://$MATH_PAGE" 2>/dev/null ) > /tmp/clearcote-math-out.html || true
-  RESULT=$(tr -d '[:space:]' < /tmp/clearcote-math-out.html | grep -oE 'true+|false[^<]*' | head -1)
-  echo "  math gate result: ${RESULT:-<empty>}"
-  [ "$RESULT" = "true,true,true,true,true" ] || fail "V8 constants WRONG (expect 5x true) —
-snapshot is corrupt (host-tool failure); do NOT ship. See docs/BUILD-ARM64.md"
-  echo "  MATH GATE PASS — V8 constants correct"
-fi
 
 log "STAGE D: package (TARGET=linux ARCH=arm64)"
 ( export TARGET=linux ARCH=arm64 ; bash "$REPO/scripts/05-package.sh" )

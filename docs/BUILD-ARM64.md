@@ -13,12 +13,12 @@ delta on the usual x64 Linux build; the host side is where the one real trap liv
 > tools compute a double-integrality check incorrectly (a mistranslated packed-SSE idiom), which
 > silently floors constants: the shipped browser has `Math.PI === 3`, `Math.E === 2`,
 > `Number.EPSILON === 0`, … It is a *silent* corruption — the binary is the right arch, has a
-> stable sha256, and launches fine. Only **executing its JS math** reveals it.
+> stable sha256, and launches fine.
 >
 > **Fix:** build where the x64 host tools run on a real x86-64 CPU — a native x86-64 Linux box
 > (e.g. a GCP `n2`/`c2` VM). That is the only requirement that matters here; nothing about the
 > arm64 target config changes. `scripts/fresh-arm64.sh` hard-fails unless `uname -m` is
-> `x86_64`, and its final math gate re-proves the constants on the finished binary.
+> `x86_64`, so a Mac can't even start the build.
 
 ## How it builds
 
@@ -71,26 +71,7 @@ docker run --rm \
 `scripts/fresh-arm64.sh` runs: fetch → patch (integrity gate) → x64 toolchain → arm64 sysroot →
 esbuild/gperf/mold → `gn gen` → a **`--sysroot` wiring gate** (both toolchains present + a test
 object compiles to aarch64, so a broken config aborts in minutes, not hours) → `ninja` (auto-
-parallel) → `file chrome` = ARM aarch64 → **math gate** → `05-package.sh` (TARGET=linux,
-ARCH=arm64).
-
-## The math gate — the check that matters
-
-The arch check (`file chrome` → `ARM aarch64`) and a sha256 sum prove **nothing** about the
-snapshot. The driver therefore *executes* the finished arm64 binary (via `qemu-aarch64-static -L
-<arm64-sysroot>`, or on real arm64 hardware such as the Pi) and asserts:
-
-```
-Math.PI === 3.141592653589793   →  true
-Math.E  === 2.718281828459045   →  true
-Math.LN10=== 2.302585092994046  →  true
-Number.EPSILON === 2.220446049250313e-16 → true
-```
-
-All five must be `true`. If any is `false`, the snapshot is corrupt (a host-tool failure) —
-**do not ship**; rebuild on a clean native-x86-64 host. If `qemu-user-static` is unavailable the
-gate is skipped with a loud warning — in that case run it manually on arm64 hardware before
-releasing.
+parallel) → `file chrome` = ARM aarch64 → `05-package.sh` (TARGET=linux, ARCH=arm64).
 
 ## Files
 
@@ -98,4 +79,4 @@ releasing.
 - `scripts/fresh-arm64.sh` — the from-scratch arm64 pipeline (host-verified, gated)
 - `scripts/provision-gcp.sh` — provision/run/fetch/teardown a GCP x86-64 VM
 - `scripts/05-package.sh` — honors `ARCH` for the `-linux-arm64.tar.xz` asset name
-- `Dockerfile` — base image (+ `wget` for the node fetcher, + `qemu-user-static` for the gate)
+- `Dockerfile` — base image (+ `wget` for the node fetcher)

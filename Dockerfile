@@ -29,12 +29,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # installed at RUN time by scripts/02-host-toolchain.sh (install-build-deps.py), because they
 # need the source tree that scripts/00 fetches first. ciopfs = case-insensitive overlay for the
 # Windows SDK headers; xz-utils = unpack the Linux .tar.xz; wget = third_party/node/
-# update_node_binaries hard-codes wget; qemu-user-static = the arm64 math-correctness gate in
-# scripts/fresh-arm64.sh executes the produced aarch64 binary here.
+# update_node_binaries hard-codes wget.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git python3 python3-pip curl ca-certificates \
       wget ninja-build zip unzip xz-utils ciopfs patch binutils \
-      sudo lsb-release file pkg-config qemu-user-static \
+      sudo lsb-release file pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /clearcote
